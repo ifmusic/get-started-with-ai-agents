@@ -1,39 +1,37 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.13.8-slim-bookworm
+# --- Stage 1: Build the Vite Frontend ---
+FROM node:22-bookworm-slim AS frontend-builder
+RUN npm install -g pnpm@10.6.0
+WORKDIR /app/frontend
 
+COPY frontend/package.json frontend/pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile=false
+
+COPY frontend/ ./
+# This command creates files in /app/api/static/react (based on your logs)
+RUN pnpm build
+
+# --- Stage 2: Final Python Runtime ---
+FROM python:3.13.8-slim-bookworm
 WORKDIR /code
 
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip>=25.3 \
+    && pip install --no-cache-dir -r requirements.txt
+
+# Copy all backend code first
 COPY . .
 
-# Upgrade pip to fix security vulnerability GHSA-4xh5-x5gv-qwph
-RUN pip install --no-cache-dir --upgrade pip>=25.3
+# COPY FROM THE CUSTOM VITE PATH
+# Based on your log: ../api/static/react/
+# In the builder stage, this resolves to /app/api/static/react/
+COPY --from=frontend-builder /app/api/static/react/ ./api/static/react/
 
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
-
-# Install Node.js and pnpm with specific versions
-RUN apt-get update \
-    && apt-get install -y curl \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y nodejs \
-    && npm install -g pnpm@10.6.0 \
-    && node --version \
-    && pnpm --version
-
-# Build React frontend
-WORKDIR /code/frontend
-RUN pnpm install --frozen-lockfile=false \
-    && pnpm build \
-    && rm -rf node_modules \
-    && rm -rf /root/.local/share/pnpm \
-    && rm -rf /root/.pnpm-store
-
-
-RUN apt-get purge -y krb5-user libkrb5-3 libkrb5support0 libgssapi-krb5-2
-
-# Return to backend directory
-WORKDIR /code
+# Security cleanup
+RUN apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 50505
-
 CMD ["gunicorn", "api.main:create_app"]
